@@ -72,6 +72,50 @@ type RecommendedVideo = {
   url: string;
   checklist: LearningChecklistItem[];
 };
+type VideoRecChecklistItem = {
+  id: string;
+  text: string;
+  done?: boolean;
+};
+
+type VideoRec = {
+  id: string;
+  title: string;
+  description?: string;
+  url?: string;
+  duration?: string;
+  durationMin?: number;
+  status?: string;
+  checklist?: VideoRecChecklistItem[];
+};
+
+function normalizeVideoStatus(raw?: string): VideoStatus {
+  if (!raw) return "not_seen";
+  const value = raw.toLowerCase();
+  if (value.includes("aprend") || value.includes("master")) return "mastered";
+  if (value.includes("vi") || value.includes("visto") || value.includes("watch")) return "watched";
+  return "not_seen";
+}
+
+function normalizeVideoRec(data: VideoRec): RecommendedVideo {
+  return {
+    id: data.id,
+    title: data.title ?? "",
+    description: data.description ?? "",
+    duration:
+      data.duration ??
+      (typeof data.durationMin === "number" && data.durationMin > 0
+        ? `${data.durationMin} min`
+        : ""),
+    status: normalizeVideoStatus(data.status),
+    url: data.url ?? "",
+    checklist: (data.checklist ?? []).map((item) => ({
+      id: item.id,
+      text: item.text,
+      done: !!item.done,
+    })),
+  };
+}
 
 const VIDEO_STATUS_LABELS: Record<VideoStatus, string> = {
   not_seen: "No lo vi aún",
@@ -88,38 +132,48 @@ const VIDEO_STATUS_BADGE_CLASSES: Record<VideoStatus, string> = {
 const STORAGE_KEY = "learning-journal-v1";
 const SETTINGS_KEY = "learning-journal-settings";
 const VIDEO_STORAGE_KEY = "learning-journal-recommended-videos-v1";
-
 const DEFAULT_RECOMMENDED_VIDEOS: RecommendedVideo[] = [
   {
-    id: "tal-01",
-    title: "TAL",
-    description: "Video sobre tal cosa (actualiza esta nota con más contexto).",
+    id: uuidv4(),
+    title: "Fundamentos de diseño de sistemas",
+    description: "Introducción a los conceptos clave de diseño de sistemas, incluyendo acoplamiento, cohesión, abstracción y modularidad.",
     duration: "45 min",
     status: "not_seen",
-    url: "",
-    checklist: [],
+    url: "https://www.youtube.com/watch?v=3Icm-a1p0Q4",
+    checklist: [
+      { id: uuidv4(), text: "Comprendí el flujo de autenticación", done: false },
+      { id: uuidv4(), text: "Entendí la importancia de la modularidad", done: false },
+      { id: uuidv4(), text: "Identifiqué los beneficios de la abstracción", done: false },
+    ],
   },
   {
-    id: "tal-02",
-    title: "TAL",
-    description:
-      "Revisión de tal cosa para el equipo — actualiza con la información correcta.",
-    duration: "1 h",
-    status: "not_seen",
-    url: "",
-    checklist: [],
-  },
-  {
-    id: "tal-03",
-    title: "TAL",
-    description:
-      "Charla recomendada para tal cosa. Completa los detalles cuando los tengas.",
+    id: uuidv4(),
+    title: "Introducción a la programación funcional",
+    description: "Conceptos básicos de programación funcional, incluyendo funciones puras, inmutabilidad y composición.",
     duration: "30 min",
-    status: "not_seen",
-    url: "",
-    checklist: [],
+    status: "watched",
+    url: "https://www.youtube.com/watch?v=BMUiFMZr7vk",
+    checklist: [
+      { id: uuidv4(), text: "Entendí el concepto de función pura", done: true },
+      { id: uuidv4(), text: "Comprendí la inmutabilidad", done: true },
+      { id: uuidv4(), text: "Identifiqué la composición de funciones", done: true },
+    ],
+  },
+  {
+    id: uuidv4(),
+    title: "Introducción a la arquitectura de microservicios",
+    description: "Conceptos clave de la arquitectura de microservicios, incluyendo desacoplamiento, escalabilidad y tolerancia a fallos.",
+    duration: "60 min",
+    status: "mastered",
+    url: "https://www.youtube.com/watch?v=4DZV14tq3K8",
+    checklist: [
+      { id: uuidv4(), text: "Entendí el concepto de microservicio", done: true },
+      { id: uuidv4(), text: "Comprendí el desacoplamiento", done: true },
+      { id: uuidv4(), text: "Identifiqué la tolerancia a fallos", done: true },
+    ],
   },
 ];
+
 
 function createEmptyVideo(): RecommendedVideo {
   return {
@@ -333,7 +387,7 @@ function LearningJournalApp() {
           </h1>
           <p className="text-slate-500">
             Guarda cada día lo que aprendiste en la empresa, con enlaces a
-            videos y recursos. Sin backend: todo queda en tu navegador.
+            videos y recursos.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -554,6 +608,60 @@ function RecommendedVideosSection({
 }) {
   const [editing, setEditing] = useState<RecommendedVideo | null>(null);
   const [checklistDrafts, setChecklistDrafts] = useState<Record<string, string>>({});
+  const [publicVideos, setPublicVideos] = useState<RecommendedVideo[]>([]);
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadPublicVideos() {
+      try {
+        const response = await fetch("/videos.json");
+        if (!active) return;
+        if (!response.ok) {
+          setPublicVideos([]);
+          return;
+        }
+        const raw = (await response.json()) as unknown;
+        if (!Array.isArray(raw)) {
+          setPublicVideos([]);
+          return;
+        }
+        const normalized = raw
+          .map((item) => {
+            if (!item || typeof item !== "object") return null;
+            const record = item as VideoRec;
+            if (typeof record.id !== "string") return null;
+            return normalizeVideoRec(record);
+          })
+          .filter((item): item is RecommendedVideo => item !== null);
+        setPublicVideos(normalized);
+      } catch {
+        if (active) setPublicVideos([]);
+      }
+    }
+
+    loadPublicVideos();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const mergedVideos = useMemo(() => {
+    const byId = new Map<string, RecommendedVideo>();
+    publicVideos.forEach((video) => byId.set(video.id, video));
+    videos.forEach((video) => byId.set(video.id, video));
+    return Array.from(byId.values());
+  }, [publicVideos, videos]);
+
+  const upsertLocalVideo = (base: RecommendedVideo, patch: Partial<RecommendedVideo>) => {
+    onChange((prev) => {
+      const existing = prev.find((v) => v.id === base.id);
+      if (existing) {
+        return prev.map((v) => (v.id === base.id ? { ...existing, ...patch } : v));
+      }
+      return [...prev, { ...base, ...patch }];
+    });
+  };
 
   const openNewVideo = () => {
     setEditing(createEmptyVideo());
@@ -561,10 +669,13 @@ function RecommendedVideosSection({
 
   const saveVideo = (video: RecommendedVideo) => {
     onChange((prev) => {
-      const exists = prev.some((p) => p.id === video.id);
-      return exists
-        ? prev.map((p) => (p.id === video.id ? { ...video } : p))
-        : [...prev, { ...video }];
+      const index = prev.findIndex((p) => p.id === video.id);
+      if (index >= 0) {
+        const next = [...prev];
+        next[index] = { ...video };
+        return next;
+      }
+      return [...prev, { ...video }];
     });
     setEditing(null);
   };
@@ -579,56 +690,32 @@ function RecommendedVideosSection({
     });
   };
 
-  const updateVideo = (id: string, patch: Partial<RecommendedVideo>) => {
-    onChange((prev) =>
-      prev.map((video) => (video.id === id ? { ...video, ...patch } : video))
-    );
+  const handleStatusChange = (video: RecommendedVideo, status: VideoStatus) => {
+    upsertLocalVideo(video, { status });
   };
 
-  const updateChecklist = (videoId: string, items: LearningChecklistItem[]) => {
-    onChange((prev) =>
-      prev.map((video) =>
-        video.id === videoId ? { ...video, checklist: items } : video
-      )
+  const toggleChecklistItem = (video: RecommendedVideo, itemId: string) => {
+    const nextChecklist = video.checklist.map((item) =>
+      item.id === itemId ? { ...item, done: !item.done } : item
     );
+    upsertLocalVideo(video, { checklist: nextChecklist });
   };
 
-  const toggleChecklistItem = (videoId: string, itemId: string) => {
-    const video = videos.find((v) => v.id === videoId);
-    if (!video) return;
-    updateChecklist(
-      videoId,
-      video.checklist.map((item) =>
-        item.id === itemId ? { ...item, done: !item.done } : item
-      )
-    );
+  const removeChecklistItem = (video: RecommendedVideo, itemId: string) => {
+    const nextChecklist = video.checklist.filter((item) => item.id !== itemId);
+    upsertLocalVideo(video, { checklist: nextChecklist });
   };
 
-  const removeChecklistItem = (videoId: string, itemId: string) => {
-    const video = videos.find((v) => v.id === videoId);
-    if (!video) return;
-    updateChecklist(
-      videoId,
-      video.checklist.filter((item) => item.id !== itemId)
-    );
-  };
-
-  const addChecklistItem = (videoId: string) => {
-    const raw = (checklistDrafts[videoId] || "").trim();
+  const addChecklistItem = (video: RecommendedVideo) => {
+    const raw = (checklistDrafts[video.id] || "").trim();
     if (!raw) return;
-    const video = videos.find((v) => v.id === videoId);
-    if (!video) return;
     const newItem: LearningChecklistItem = {
       id: uuidv4(),
       text: raw,
       done: false,
     };
-    updateChecklist(videoId, [...video.checklist, newItem]);
-    setChecklistDrafts((prev) => ({ ...prev, [videoId]: "" }));
-  };
-
-  const handleStatusChange = (videoId: string, status: VideoStatus) => {
-    updateVideo(videoId, { status });
+    upsertLocalVideo(video, { checklist: [...video.checklist, newItem] });
+    setChecklistDrafts((prev) => ({ ...prev, [video.id]: "" }));
   };
 
   return (
@@ -646,7 +733,7 @@ function RecommendedVideosSection({
         </Button>
       </div>
 
-      {videos.length === 0 ? (
+      {mergedVideos.length === 0 ? (
         <Card>
           <CardContent className="py-10 text-center text-sm text-slate-500">
             Aún no hay videos recomendados. Añade el primero con el botón superior.
@@ -654,141 +741,146 @@ function RecommendedVideosSection({
         </Card>
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
-          {videos.map((video) => (
-            <Card key={video.id} className="group">
-              <CardHeader className="pb-3">
-                <CardTitle className="flex flex-col gap-2">
-                  <div className="flex items-start justify-between gap-2">
-                    <span className="text-lg font-semibold">
-                      {video.title || "(Sin título)"}
-                    </span>
-                    <span
-                      className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${VIDEO_STATUS_BADGE_CLASSES[video.status]}`}
-                    >
-                      {VIDEO_STATUS_LABELS[video.status]}
-                    </span>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                    <Clock className="h-4 w-4" />
-                    <span>{video.duration || "Duración no especificada"}</span>
-                  </div>
-                </CardTitle>
-                <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity mt-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() =>
-                      setEditing({
-                        ...video,
-                        checklist: video.checklist.map((item) => ({ ...item })),
-                      })
-                    }
-                  >
-                    <Pencil className="h-4 w-4 mr-2" />
-                    Editar
-                  </Button>
-                  <Button size="sm" variant="destructive" onClick={() => deleteVideo(video.id)}>
-                    <Trash2 className="h-4 w-4 mr-2" />
-                    Eliminar
-                  </Button>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <p className="text-sm text-slate-600 leading-relaxed">
-                  {video.description || "Añade una descripción para recordar de qué va la charla."}
-                </p>
-                <div className="flex flex-col gap-2">
-                  <Label className="text-xs uppercase tracking-wide text-slate-500">
-                    Estado
-                  </Label>
-                  <select
-                    className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                    value={video.status}
-                    onChange={(e) =>
-                      handleStatusChange(video.id, e.target.value as VideoStatus)
-                    }
-                  >
-                    {Object.entries(VIDEO_STATUS_LABELS).map(([value, label]) => (
-                      <option key={value} value={value}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                {video.url ? (
-                  <a
-                    href={video.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-2 text-sm text-slate-700 underline"
-                  >
-                    <ArrowUpRight className="h-4 w-4" />
-                    Abrir video
-                  </a>
-                ) : (
-                  <p className="text-xs text-slate-400">
-                    Agrega un enlace para poder abrir el video desde aquí.
-                  </p>
-                )}
-                <div>
-                  <p className="text-xs uppercase tracking-wide text-slate-500 mb-2">
-                    Checklist de aprendizajes
-                  </p>
-                  <div className="space-y-2">
-                    {video.checklist.length === 0 && (
-                      <p className="text-xs text-slate-400">
-                        Añade ítems para recordar qué aprendiste.
-                      </p>
-                    )}
-                    {video.checklist.map((item) => (
-                      <div key={item.id} className="flex items-start gap-2">
-                        <input
-                          type="checkbox"
-                          className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-600 focus:ring-slate-400"
-                          checked={item.done}
-                          onChange={() => toggleChecklistItem(video.id, item.id)}
-                        />
-                        <span
-                          className={`text-sm ${
-                            item.done ? "text-slate-400 line-through" : "text-slate-600"
-                          }`}
-                        >
-                          {item.text}
-                        </span>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="ml-auto text-slate-400 hover:text-slate-600"
-                          onClick={() => removeChecklistItem(video.id, item.id)}
-                          aria-label="Eliminar ítem de checklist"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    ))}
-                  </div>
-                  <form
-                    className="mt-3 flex gap-2"
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      addChecklistItem(video.id);
-                    }}
-                  >
-                    <Input
-                      placeholder='Ej. "Comprendí el flujo de autenticación"'
-                      value={checklistDrafts[video.id] ?? ""}
-                      onChange={(e) =>
-                        setChecklistDrafts((prev) => ({ ...prev, [video.id]: e.target.value }))
+          {mergedVideos.map((video) => {
+            const isLocal = videos.some((v) => v.id === video.id);
+            return (
+              <Card key={video.id} className="group">
+                <CardHeader className="pb-3">
+                  <CardTitle className="flex flex-col gap-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="text-lg font-semibold">
+                        {video.title || "(Sin título)"}
+                      </span>
+                      <span
+                        className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${VIDEO_STATUS_BADGE_CLASSES[video.status]}`}
+                      >
+                        {VIDEO_STATUS_LABELS[video.status]}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                      <Clock className="h-4 w-4" />
+                      <span>{video.duration || "Duración no especificada"}</span>
+                    </div>
+                  </CardTitle>
+                  <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity mt-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        setEditing({
+                          ...video,
+                          checklist: video.checklist.map((item) => ({ ...item })),
+                        })
                       }
-                    />
-                    <Button type="submit" variant="outline">
-                      Añadir
+                    >
+                      <Pencil className="h-4 w-4 mr-2" />
+                      Editar
                     </Button>
-                  </form>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+                    {isLocal && (
+                      <Button size="sm" variant="destructive" onClick={() => deleteVideo(video.id)}>
+                        <Trash2 className="h-4 w-4 mr-2" />
+                        Eliminar
+                      </Button>
+                    )}
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <p className="text-sm text-slate-600 leading-relaxed">
+                    {video.description || "Añade una descripción para recordar de qué va la charla."}
+                  </p>
+                  <div className="flex flex-col gap-2">
+                    <Label className="text-xs uppercase tracking-wide text-slate-500">
+                      Estado
+                    </Label>
+                    <select
+                      className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                      value={video.status}
+                      onChange={(e) =>
+                        handleStatusChange(video, e.target.value as VideoStatus)
+                      }
+                    >
+                      {Object.entries(VIDEO_STATUS_LABELS).map(([value, label]) => (
+                        <option key={value} value={value}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  {video.url ? (
+                    <a
+                      href={video.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-2 text-sm text-slate-700 underline"
+                    >
+                      <ArrowUpRight className="h-4 w-4" />
+                      Abrir video
+                    </a>
+                  ) : (
+                    <p className="text-xs text-slate-400">
+                      Agrega un enlace para poder abrir el video desde aquí.
+                    </p>
+                  )}
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-slate-500 mb-2">
+                      Checklist de aprendizajes
+                    </p>
+                    <div className="space-y-2">
+                      {video.checklist.length === 0 && (
+                        <p className="text-xs text-slate-400">
+                          Añade ítems para recordar qué aprendiste.
+                        </p>
+                      )}
+                      {video.checklist.map((item) => (
+                        <div key={item.id} className="flex items-start gap-2">
+                          <input
+                            type="checkbox"
+                            className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-600 focus:ring-slate-400"
+                            checked={item.done}
+                            onChange={() => toggleChecklistItem(video, item.id)}
+                          />
+                          <span
+                            className={`text-sm ${
+                              item.done ? "text-slate-400 line-through" : "text-slate-600"
+                            }`}
+                          >
+                            {item.text}
+                          </span>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="ml-auto text-slate-400 hover:text-slate-600"
+                            onClick={() => removeChecklistItem(video, item.id)}
+                            aria-label="Eliminar ítem de checklist"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                    <form
+                      className="mt-3 flex gap-2"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        addChecklistItem(video);
+                      }}
+                    >
+                      <Input
+                        placeholder='Ej. "Comprendí el flujo de autenticación"'
+                        value={checklistDrafts[video.id] ?? ""}
+                        onChange={(e) =>
+                          setChecklistDrafts((prev) => ({ ...prev, [video.id]: e.target.value }))
+                        }
+                      />
+                      <Button type="submit" variant="outline">
+                        Añadir
+                      </Button>
+                    </form>
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
         </div>
       )}
 
