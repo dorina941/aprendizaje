@@ -1,0 +1,15 @@
+[
+    {
+      "id": "seed-1",
+      "title": "TAL (va de tal cosa)",
+      "description": "Breve resumen del video…",
+      "url": "https://www.youtube.com/watch?v=XXXXX",
+      "durationMin": 45,
+      "status": "pendiente",
+      "checklist": [
+        { "id": "c1", "text": "Entendí el concepto X", "done": false },
+        { "id": "c2", "text": "Probé un ejemplo", "done": false }
+      ]
+    }
+  ]
+  
