@@ -1,65 +1,586 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { v4 as uuidv4 } from "uuid";
+import {
+  Plus,
+  Link as LinkIcon,
+  Save,
+  Trash2,
+  Pencil,
+  Download,
+  Upload,
+  Search,
+  Calendar as CalendarIcon,
+  ArrowUpRight,
+  FileText,
+  Undo2,
+  Redo2,
+} from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+
+// shadcn/ui
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { Separator } from "@/components/ui/separator";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+
+type LinkItem = { id: string; url: string; title?: string };
+
+type Entry = {
+  id: string;
+  date: string; // YYYY-MM-DD
+  title: string;
+  notes: string;
+  tags: string[];
+  links: LinkItem[];
+};
+
+const STORAGE_KEY = "learning-journal-v1";
+const SETTINGS_KEY = "learning-journal-settings";
+
+function useLocalStorage<T>(key: string, initial: T) {
+  const [value, setValue] = useState<T>(() => {
+    try {
+      const raw = typeof window !== "undefined" ? localStorage.getItem(key) : null;
+      return raw ? (JSON.parse(raw) as T) : initial;
+    } catch {
+      return initial;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch {}
+  }, [key, value]);
+  return [value, setValue] as const;
+}
+
+function parseTags(text: string): string[] {
+  return text
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean)
+    .map((t) => (t.startsWith("#") ? t.slice(1) : t))
+    .map((t) => t.toLowerCase());
+}
+
+function formatDate(d: string) {
+  const [y, m, day] = d.split("-").map(Number);
+  const date = new Date(y, (m || 1) - 1, day || 1);
+  return date.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+  });
+}
+
+function exportJSON(entries: Entry[]) {
+  const blob = new Blob([JSON.stringify(entries, null, 2)], {
+    type: "application/json",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `apuntes-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportMarkdown(entries: Entry[]) {
+  const header = `# Diario de aprendizaje\n\nGenerado: ${new Date().toLocaleString()}\n\n`;
+  const body = entries
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .map((e) => {
+      const tags = e.tags.map((t) => `#${t}`).join(" ");
+      const links = e.links
+        .map((l) => `- [${l.title || l.url}](${l.url})`)
+        .join("\n");
+      return `## ${formatDate(e.date)} — ${e.title}\n\n${tags}\n\n${e.notes}\n\n**Enlaces**\n\n${
+        links || "(sin enlaces)"
+      }\n`;
+    })
+    .join("\n\n");
+  const blob = new Blob([header + body], { type: "text/markdown" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `apuntes-${new Date().toISOString().slice(0, 10)}.md`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function fileOpenJSON(onLoad: (data: Entry[]) => void) {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".json,application/json";
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    try {
+      const data = JSON.parse(text);
+      if (Array.isArray(data)) onLoad(data);
+      else alert("El JSON no tiene el formato esperado.");
+    } catch {
+      alert("No se pudo leer el JSON.");
+    }
+  };
+  input.click();
+}
+
+function uniq<T>(arr: T[]): T[] {
+  return Array.from(new Set(arr));
+}
+
+export default function Page() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
+    <main className="min-h-screen bg-gradient-to-b from-slate-50 to-white text-slate-800 p-4 sm:p-8">
+      <div className="mx-auto max-w-6xl">
+        <LearningJournalApp />
+      </div>
+    </main>
+  );
+}
+
+function LearningJournalApp() {
+  const [entries, setEntries] = useLocalStorage<Entry[]>(STORAGE_KEY, []);
+  const [query, setQuery] = useState("");
+  const [tagFilter, setTagFilter] = useState<string | null>(null);
+  const [editing, setEditing] = useState<Entry | null>(null);
+  const [settings, setSettings] = useLocalStorage(SETTINGS_KEY, {
+    compact: false,
+  });
+
+  const allTags = useMemo(
+    () => uniq(entries.flatMap((e) => e.tags)).sort(),
+    [entries]
+  );
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return entries
+      .filter((e) => !tagFilter || e.tags.includes(tagFilter))
+      .filter(
+        (e) =>
+          !q ||
+          [e.title, e.notes, e.tags.join(" "), e.links.map((l) => l.title || l.url).join(" ")]
+            .join(" ")
+            .toLowerCase()
+            .includes(q)
+      )
+      .sort((a, b) => b.date.localeCompare(a.date));
+  }, [entries, query, tagFilter]);
+
+  function startNew() {
+    const today = new Date().toISOString().slice(0, 10);
+    setEditing({
+      id: uuidv4(),
+      date: today,
+      title: "",
+      notes: "",
+      tags: [],
+      links: [],
+    });
+  }
+
+  function saveEntry(entry: Entry) {
+    setEntries((prev) => {
+      const exists = prev.some((p) => p.id === entry.id);
+      const next = exists
+        ? prev.map((p) => (p.id === entry.id ? entry : p))
+        : [...prev, entry];
+      return next;
+    });
+    setEditing(null);
+  }
+
+  function deleteEntry(id: string) {
+    if (!confirm("¿Eliminar esta entrada?")) return;
+    setEntries((prev) => prev.filter((e) => e.id !== id));
+  }
+
+  function clearAll() {
+    if (!confirm("Esto borrará todas tus entradas locales. ¿Seguro?")) return;
+    setEntries([]);
+  }
+
+  // Undo/Redo simple
+  const historyRef = useRef<Entry[][]>([]);
+  const futureRef = useRef<Entry[][]>([]);
+  useEffect(() => {
+    historyRef.current.push(entries);
+    if (historyRef.current.length > 50) historyRef.current.shift();
+  }, [entries]);
+  const undo = () => {
+    const hist = historyRef.current;
+    if (hist.length <= 1) return;
+    const current = hist.pop();
+    if (!current) return;
+    futureRef.current.push(current);
+    setEntries(hist[hist.length - 1] || []);
+  };
+  const redo = () => {
+    const next = futureRef.current.pop();
+    if (!next) return;
+    setEntries(next);
+  };
+
+  return (
+    <TooltipProvider>
+      <header className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-6">
+        <div>
+          <h1 className="text-3xl sm:text-4xl font-bold tracking-tight">
+            Diario de Aprendizaje
           </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+          <p className="text-slate-500">
+            Guarda cada día lo que aprendiste en la empresa, con enlaces a
+            videos y recursos. Sin backend: todo queda en tu navegador.
           </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+        <div className="flex items-center gap-2">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="outline" onClick={undo}>
+                <Undo2 className="h-4 w-4 mr-2" />
+                Deshacer
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Deshacer último cambio</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="outline" onClick={redo}>
+                <Redo2 className="h-4 w-4 mr-2" />
+                Rehacer
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Rehacer cambio</TooltipContent>
+          </Tooltip>
+          <Button onClick={startNew}>
+            <Plus className="h-4 w-4 mr-2" />
+            Nueva entrada
+          </Button>
         </div>
-      </main>
+      </header>
+
+      <Card className="mb-4">
+        <CardContent className="p-4 flex flex-col sm:flex-row gap-3">
+          <div className="flex-1 flex items-center gap-2">
+            <Search className="h-4 w-4" />
+            <Input
+              placeholder="Buscar título, notas, enlaces…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </div>
+          <div className="flex items-center gap-2 overflow-x-auto">
+            <Badge
+              variant={tagFilter === null ? "default" : "outline"}
+              className="cursor-pointer"
+              onClick={() => setTagFilter(null)}
+            >
+              Todas
+            </Badge>
+            {allTags.map((t) => (
+              <Badge
+                key={t}
+                variant={tagFilter === t ? "default" : "outline"}
+                className="cursor-pointer"
+                onClick={() => setTagFilter(t)}
+              >
+                #{t}
+              </Badge>
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="outline" onClick={() => exportMarkdown(filtered)}>
+                  <FileText className="h-4 w-4 mr-2" />
+                  MD
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Exportar Markdown</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="outline" onClick={() => exportJSON(entries)}>
+                  <Download className="h-4 w-4 mr-2" />
+                  JSON
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Exportar JSON (copia de seguridad)</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="outline" onClick={() => fileOpenJSON(setEntries)}>
+                  <Upload className="h-4 w-4 mr-2" />
+                  Importar
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Importar desde JSON</TooltipContent>
+            </Tooltip>
+            <Separator orientation="vertical" className="h-6" />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="flex items-center gap-2 px-2">
+                  <span className="text-sm text-slate-600">Vista compacta</span>
+                  <Switch
+                    checked={settings.compact}
+                    onCheckedChange={(v) =>
+                      setSettings({ ...settings, compact: v })
+                    }
+                  />
+                </div>
+              </TooltipTrigger>
+              <TooltipContent>Alterna lista compacta</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="destructive" onClick={clearAll}>
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Borrar todo
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Eliminar todas las entradas (local)</TooltipContent>
+            </Tooltip>
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className={`grid gap-4 ${settings.compact ? "grid-cols-1" : "md:grid-cols-2"}`}>
+        <AnimatePresence>
+          {filtered.map((e) => (
+            <motion.div
+              key={e.id}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+            >
+              <Card className="group">
+                <CardHeader className="pb-2">
+                  <CardTitle className="flex items-center justify-between gap-2">
+                    <span className="truncate">{e.title || "(Sin título)"} </span>
+                    <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <Button size="sm" variant="outline" onClick={() => setEditing(e)}>
+                        <Pencil className="h-4 w-4 mr-1" />
+                        Editar
+                      </Button>
+                      <Button size="sm" variant="destructive" onClick={() => deleteEntry(e.id)}>
+                        <Trash2 className="h-4 w-4 mr-1" />
+                        Eliminar
+                      </Button>
+                    </div>
+                  </CardTitle>
+                  <div className="text-sm text-slate-500 flex items-center gap-2">
+                    <CalendarIcon className="h-4 w-4" />
+                    {formatDate(e.date)}
+                  </div>
+                </CardHeader>
+                <CardContent className="pt-0">
+                  <div className="flex flex-wrap gap-2 mb-2">
+                    {e.tags.map((t) => (
+                      <Badge
+                        key={t}
+                        variant="secondary"
+                        className="cursor-pointer"
+                        onClick={() => setTagFilter(t)}
+                      >
+                        #{t}
+                      </Badge>
+                    ))}
+                  </div>
+                  <p className="whitespace-pre-wrap text-sm leading-relaxed">{e.notes}</p>
+                  {e.links.length > 0 && (
+                    <div className="mt-3 space-y-2">
+                      {e.links.map((l) => (
+                        <a
+                          key={l.id}
+                          href={l.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="flex items-center gap-2 text-sm underline"
+                        >
+                          <ArrowUpRight className="h-4 w-4" />
+                          <span className="truncate">{l.title || l.url}</span>
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+      </div>
+
+      <Dialog open={!!editing} onOpenChange={(open) => !open && setEditing(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>
+              {editing?.id && entries.find((e) => e.id === editing.id)
+                ? "Editar entrada"
+                : "Nueva entrada"}
+            </DialogTitle>
+            <DialogDescription>
+              Completa los datos del día y guarda. Todo se almacena en tu navegador.
+            </DialogDescription>
+          </DialogHeader>
+          {editing && (
+            <EntryForm value={editing} onChange={setEditing} onSave={() => saveEntry(editing)} />
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <footer className="text-xs text-slate-400 mt-8 text-center">
+        Hecho con ♥ sin backend — usa Exportar JSON como copia de seguridad.
+      </footer>
+    </TooltipProvider>
+  );
+}
+
+function EntryForm({
+  value,
+  onChange,
+  onSave,
+}: {
+  value: any;
+  onChange: (v: any) => void;
+  onSave: () => void;
+}) {
+  const [tagText, setTagText] = useState(value.tags.join(", "));
+
+  function update(key: string, v: any) {
+    onChange({ ...value, [key]: v });
+  }
+
+  function addLink() {
+    const newLink: LinkItem = { id: uuidv4(), url: "", title: "" };
+    update("links", [...value.links, newLink]);
+  }
+  function updateLink(id: string, patch: Partial<LinkItem>) {
+    update(
+      "links",
+      value.links.map((l: LinkItem) => (l.id === id ? { ...l, ...patch } : l))
+    );
+  }
+  function removeLink(id: string) {
+    update(
+      "links",
+      value.links.filter((l: LinkItem) => l.id !== id)
+    );
+  }
+
+  useEffect(() => {
+    update("tags", parseTags(tagText));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tagText]);
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-center">
+        <Label>Fecha</Label>
+        <div className="sm:col-span-2">
+          <Input
+            type="date"
+            value={value.date}
+            onChange={(e) => update("date", e.target.value)}
+          />
+        </div>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-center">
+        <Label>Título</Label>
+        <div className="sm:col-span-2">
+          <Input
+            placeholder="p. ej. Integración de API de pagos"
+            value={value.title}
+            onChange={(e) => update("title", e.target.value)}
+          />
+        </div>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-start">
+        <Label>Notas</Label>
+        <div className="sm:col-span-2">
+          <Textarea
+            className="min-h-[160px]"
+            placeholder="Qué hiciste hoy, problemas, soluciones, aprendizajes clave…"
+            value={value.notes}
+            onChange={(e) => update("notes", e.target.value)}
+          />
+        </div>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-center">
+        <Label>Tags</Label>
+        <div className="sm:col-span-2">
+          <Input
+            placeholder="#frontend, #v0, #node"
+            value={tagText}
+            onChange={(e) => setTagText(e.target.value)}
+          />
+          <p className="text-xs text-slate-500 mt-1">
+            Separa por comas. Se guardan sin # y en minúsculas.
+          </p>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-start">
+        <Label>Enlaces</Label>
+        <div className="sm:col-span-2 space-y-2">
+          {value.links.map((l: LinkItem) => (
+            <div key={l.id} className="flex gap-2 items-center">
+              <LinkIcon className="h-4 w-4 shrink-0" />
+              <Input
+                placeholder="URL (https://...)"
+                value={l.url}
+                onChange={(e) => updateLink(l.id, { url: e.target.value })}
+              />
+              <Input
+                placeholder="Título opcional"
+                value={l.title || ""}
+                onChange={(e) => updateLink(l.id, { title: e.target.value })}
+              />
+              <Button
+                variant="destructive"
+                size="icon"
+                onClick={() => removeLink(l.id)}
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </div>
+          ))}
+          <Button variant="outline" onClick={addLink}>
+            <Plus className="h-4 w-4 mr-2" />
+            Añadir enlace
+          </Button>
+        </div>
+      </div>
+      <div className="flex justify-end gap-2 pt-2">
+        <DialogTrigger asChild>
+          <Button variant="outline">Cerrar</Button>
+        </DialogTrigger>
+        <Button onClick={onSave}>
+          <Save className="h-4 w-4 mr-2" />
+          Guardar
+        </Button>
+      </div>
     </div>
   );
 }
