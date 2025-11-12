@@ -16,6 +16,7 @@ import {
   FileText,
   Undo2,
   Redo2,
+  Clock,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -54,8 +55,83 @@ type Entry = {
   links: LinkItem[];
 };
 
+type VideoStatus = "not_seen" | "watched" | "mastered";
+
+type LearningChecklistItem = {
+  id: string;
+  text: string;
+  done: boolean;
+};
+
+type RecommendedVideo = {
+  id: string;
+  title: string;
+  description: string;
+  duration: string;
+  status: VideoStatus;
+  url: string;
+  checklist: LearningChecklistItem[];
+};
+
+const VIDEO_STATUS_LABELS: Record<VideoStatus, string> = {
+  not_seen: "No lo vi aún",
+  watched: "Ya lo vi",
+  mastered: "Ya lo aprendí todo",
+};
+
+const VIDEO_STATUS_BADGE_CLASSES: Record<VideoStatus, string> = {
+  not_seen: "bg-slate-200 text-slate-700",
+  watched: "bg-sky-100 text-sky-800",
+  mastered: "bg-emerald-100 text-emerald-800",
+};
+
 const STORAGE_KEY = "learning-journal-v1";
 const SETTINGS_KEY = "learning-journal-settings";
+const VIDEO_STORAGE_KEY = "learning-journal-recommended-videos-v1";
+
+const DEFAULT_RECOMMENDED_VIDEOS: RecommendedVideo[] = [
+  {
+    id: "tal-01",
+    title: "TAL",
+    description: "Video sobre tal cosa (actualiza esta nota con más contexto).",
+    duration: "45 min",
+    status: "not_seen",
+    url: "",
+    checklist: [],
+  },
+  {
+    id: "tal-02",
+    title: "TAL",
+    description:
+      "Revisión de tal cosa para el equipo — actualiza con la información correcta.",
+    duration: "1 h",
+    status: "not_seen",
+    url: "",
+    checklist: [],
+  },
+  {
+    id: "tal-03",
+    title: "TAL",
+    description:
+      "Charla recomendada para tal cosa. Completa los detalles cuando los tengas.",
+    duration: "30 min",
+    status: "not_seen",
+    url: "",
+    checklist: [],
+  },
+];
+
+function createEmptyVideo(): RecommendedVideo {
+  return {
+    id: uuidv4(),
+    title: "",
+    description: "",
+    duration: "",
+    status: "not_seen",
+    url: "",
+    checklist: [],
+  };
+}
 
 function useLocalStorage<T>(key: string, initial: T) {
   const [value, setValue] = useState<T>(() => {
@@ -169,6 +245,10 @@ function LearningJournalApp() {
   const [settings, setSettings] = useLocalStorage(SETTINGS_KEY, {
     compact: false,
   });
+  const [recommendedVideos, setRecommendedVideos] = useLocalStorage<RecommendedVideo[]>(
+    VIDEO_STORAGE_KEY,
+    DEFAULT_RECOMMENDED_VIDEOS
+  );
 
   const allTags = useMemo(
     () => uniq(entries.flatMap((e) => e.tags)).sort(),
@@ -281,6 +361,13 @@ function LearningJournalApp() {
           </Button>
         </div>
       </header>
+
+      <RecommendedVideosSection
+        videos={recommendedVideos}
+        onChange={setRecommendedVideos}
+      />
+
+      <Separator className="my-8" />
 
       <Card className="mb-4">
         <CardContent className="p-4 flex flex-col sm:flex-row gap-3">
@@ -455,6 +542,366 @@ function LearningJournalApp() {
         Hecho con ♥ sin backend — usa Exportar JSON como copia de seguridad.
       </footer>
     </TooltipProvider>
+  );
+}
+
+function RecommendedVideosSection({
+  videos,
+  onChange,
+}: {
+  videos: RecommendedVideo[];
+  onChange: React.Dispatch<React.SetStateAction<RecommendedVideo[]>>;
+}) {
+  const [editing, setEditing] = useState<RecommendedVideo | null>(null);
+  const [checklistDrafts, setChecklistDrafts] = useState<Record<string, string>>({});
+
+  const openNewVideo = () => {
+    setEditing(createEmptyVideo());
+  };
+
+  const saveVideo = (video: RecommendedVideo) => {
+    onChange((prev) => {
+      const exists = prev.some((p) => p.id === video.id);
+      return exists
+        ? prev.map((p) => (p.id === video.id ? { ...video } : p))
+        : [...prev, { ...video }];
+    });
+    setEditing(null);
+  };
+
+  const deleteVideo = (id: string) => {
+    if (!confirm("¿Eliminar este video recomendado?")) return;
+    onChange((prev) => prev.filter((video) => video.id !== id));
+    setChecklistDrafts((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  };
+
+  const updateVideo = (id: string, patch: Partial<RecommendedVideo>) => {
+    onChange((prev) =>
+      prev.map((video) => (video.id === id ? { ...video, ...patch } : video))
+    );
+  };
+
+  const updateChecklist = (videoId: string, items: LearningChecklistItem[]) => {
+    onChange((prev) =>
+      prev.map((video) =>
+        video.id === videoId ? { ...video, checklist: items } : video
+      )
+    );
+  };
+
+  const toggleChecklistItem = (videoId: string, itemId: string) => {
+    const video = videos.find((v) => v.id === videoId);
+    if (!video) return;
+    updateChecklist(
+      videoId,
+      video.checklist.map((item) =>
+        item.id === itemId ? { ...item, done: !item.done } : item
+      )
+    );
+  };
+
+  const removeChecklistItem = (videoId: string, itemId: string) => {
+    const video = videos.find((v) => v.id === videoId);
+    if (!video) return;
+    updateChecklist(
+      videoId,
+      video.checklist.filter((item) => item.id !== itemId)
+    );
+  };
+
+  const addChecklistItem = (videoId: string) => {
+    const raw = (checklistDrafts[videoId] || "").trim();
+    if (!raw) return;
+    const video = videos.find((v) => v.id === videoId);
+    if (!video) return;
+    const newItem: LearningChecklistItem = {
+      id: uuidv4(),
+      text: raw,
+      done: false,
+    };
+    updateChecklist(videoId, [...video.checklist, newItem]);
+    setChecklistDrafts((prev) => ({ ...prev, [videoId]: "" }));
+  };
+
+  const handleStatusChange = (videoId: string, status: VideoStatus) => {
+    updateVideo(videoId, { status });
+  };
+
+  return (
+    <section className="mb-10">
+      <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-4">
+        <div>
+          <h2 className="text-2xl font-semibold">Videos recomendados</h2>
+          <p className="text-sm text-slate-500">
+            Guarda aquí los enlaces que la empresa recomienda y marca tus avances.
+          </p>
+        </div>
+        <Button onClick={openNewVideo}>
+          <Plus className="h-4 w-4 mr-2" />
+          Nuevo video
+        </Button>
+      </div>
+
+      {videos.length === 0 ? (
+        <Card>
+          <CardContent className="py-10 text-center text-sm text-slate-500">
+            Aún no hay videos recomendados. Añade el primero con el botón superior.
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="grid gap-4 md:grid-cols-2">
+          {videos.map((video) => (
+            <Card key={video.id} className="group">
+              <CardHeader className="pb-3">
+                <CardTitle className="flex flex-col gap-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="text-lg font-semibold">
+                      {video.title || "(Sin título)"}
+                    </span>
+                    <span
+                      className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${VIDEO_STATUS_BADGE_CLASSES[video.status]}`}
+                    >
+                      {VIDEO_STATUS_LABELS[video.status]}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                    <Clock className="h-4 w-4" />
+                    <span>{video.duration || "Duración no especificada"}</span>
+                  </div>
+                </CardTitle>
+                <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity mt-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      setEditing({
+                        ...video,
+                        checklist: video.checklist.map((item) => ({ ...item })),
+                      })
+                    }
+                  >
+                    <Pencil className="h-4 w-4 mr-2" />
+                    Editar
+                  </Button>
+                  <Button size="sm" variant="destructive" onClick={() => deleteVideo(video.id)}>
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    Eliminar
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="text-sm text-slate-600 leading-relaxed">
+                  {video.description || "Añade una descripción para recordar de qué va la charla."}
+                </p>
+                <div className="flex flex-col gap-2">
+                  <Label className="text-xs uppercase tracking-wide text-slate-500">
+                    Estado
+                  </Label>
+                  <select
+                    className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                    value={video.status}
+                    onChange={(e) =>
+                      handleStatusChange(video.id, e.target.value as VideoStatus)
+                    }
+                  >
+                    {Object.entries(VIDEO_STATUS_LABELS).map(([value, label]) => (
+                      <option key={value} value={value}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {video.url ? (
+                  <a
+                    href={video.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-2 text-sm text-slate-700 underline"
+                  >
+                    <ArrowUpRight className="h-4 w-4" />
+                    Abrir video
+                  </a>
+                ) : (
+                  <p className="text-xs text-slate-400">
+                    Agrega un enlace para poder abrir el video desde aquí.
+                  </p>
+                )}
+                <div>
+                  <p className="text-xs uppercase tracking-wide text-slate-500 mb-2">
+                    Checklist de aprendizajes
+                  </p>
+                  <div className="space-y-2">
+                    {video.checklist.length === 0 && (
+                      <p className="text-xs text-slate-400">
+                        Añade ítems para recordar qué aprendiste.
+                      </p>
+                    )}
+                    {video.checklist.map((item) => (
+                      <div key={item.id} className="flex items-start gap-2">
+                        <input
+                          type="checkbox"
+                          className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-600 focus:ring-slate-400"
+                          checked={item.done}
+                          onChange={() => toggleChecklistItem(video.id, item.id)}
+                        />
+                        <span
+                          className={`text-sm ${
+                            item.done ? "text-slate-400 line-through" : "text-slate-600"
+                          }`}
+                        >
+                          {item.text}
+                        </span>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="ml-auto text-slate-400 hover:text-slate-600"
+                          onClick={() => removeChecklistItem(video.id, item.id)}
+                          aria-label="Eliminar ítem de checklist"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                  <form
+                    className="mt-3 flex gap-2"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      addChecklistItem(video.id);
+                    }}
+                  >
+                    <Input
+                      placeholder='Ej. "Comprendí el flujo de autenticación"'
+                      value={checklistDrafts[video.id] ?? ""}
+                      onChange={(e) =>
+                        setChecklistDrafts((prev) => ({ ...prev, [video.id]: e.target.value }))
+                      }
+                    />
+                    <Button type="submit" variant="outline">
+                      Añadir
+                    </Button>
+                  </form>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      <Dialog open={!!editing} onOpenChange={(open) => !open && setEditing(null)}>
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>
+              {editing?.id && videos.some((v) => v.id === editing.id)
+                ? "Editar video recomendado"
+                : "Nuevo video recomendado"}
+            </DialogTitle>
+            <DialogDescription>
+              Completa los datos del video recomendado. Se guardan localmente en tu navegador.
+            </DialogDescription>
+          </DialogHeader>
+          {editing && (
+            <VideoForm
+              value={editing}
+              onChange={setEditing}
+              onSave={() => saveVideo(editing)}
+              onCancel={() => setEditing(null)}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+    </section>
+  );
+}
+
+function VideoForm({
+  value,
+  onChange,
+  onSave,
+  onCancel,
+}: {
+  value: RecommendedVideo;
+  onChange: (v: RecommendedVideo) => void;
+  onSave: () => void;
+  onCancel: () => void;
+}) {
+  function update<K extends keyof RecommendedVideo>(key: K, v: RecommendedVideo[K]) {
+    onChange({ ...value, [key]: v });
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-center">
+        <Label>Título</Label>
+        <div className="sm:col-span-2">
+          <Input
+            placeholder="p. ej. Fundamentos de diseño de sistemas"
+            value={value.title}
+            onChange={(e) => update("title", e.target.value)}
+          />
+        </div>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-start">
+        <Label>Descripción</Label>
+        <div className="sm:col-span-2">
+          <Textarea
+            placeholder="Contexto sobre por qué ver este video, ideas clave, etc."
+            value={value.description}
+            onChange={(e) => update("description", e.target.value)}
+            className="min-h-[120px]"
+          />
+        </div>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-center">
+        <Label>Duración</Label>
+        <div className="sm:col-span-2">
+          <Input
+            placeholder="p. ej. 45 min"
+            value={value.duration}
+            onChange={(e) => update("duration", e.target.value)}
+          />
+        </div>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-center">
+        <Label>Estado inicial</Label>
+        <div className="sm:col-span-2">
+          <select
+            className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+            value={value.status}
+            onChange={(e) => update("status", e.target.value as VideoStatus)}
+          >
+            {Object.entries(VIDEO_STATUS_LABELS).map(([val, label]) => (
+              <option key={val} value={val}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-center">
+        <Label>Enlace</Label>
+        <div className="sm:col-span-2">
+          <Input
+            placeholder="https://..."
+            value={value.url}
+            onChange={(e) => update("url", e.target.value)}
+          />
+        </div>
+      </div>
+      <div className="flex justify-end gap-2 pt-2">
+        <Button variant="outline" onClick={onCancel}>
+          Cancelar
+        </Button>
+        <Button onClick={onSave}>
+          <Save className="h-4 w-4 mr-2" />
+          Guardar video
+        </Button>
+      </div>
+    </div>
   );
 }
 
